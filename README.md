@@ -687,6 +687,16 @@ Agent tuân thủ các điều kiện chuyển đổi trạng thái và quyết 
 -   **Giả thuyết chính (Hypothesis):** Một AI Agent đóng vai trò trung gian "chủ động và trung lập" (Mediator) hỗ trợ hòa giải giá, cung cấp giải pháp an toàn pháp lý kịp thời sẽ tăng tốc độ chốt lịch hẹn xem xe lên ít nhất 25% so với việc để hai bên tự thương lượng tự do.
 -   **Không tối ưu mù quáng cho Close Rate:** Nếu chỉ tối ưu chốt giao dịch, Agent có thể gây áp lực quá mức hoặc bỏ qua rủi ro pháp lý. Vì vậy ABR phải đi kèm Escalation Recall, Hallucination Rate và Safety Violations.
 
+#### Proposed Scenario Hypotheses
+
+| Scenario | Hypothesis | Observable metric |
+| :--- | :--- | :--- |
+| `c1 - Negotiation gap` | Nếu Agent phát hiện price gap sớm và đề xuất midpoint hoặc alternative listings, drop-off sau thương lượng giá sẽ giảm và tỷ lệ chốt lịch xem xe sẽ tăng. | ABR, drop-off after negotiation, Next-Action Accuracy |
+| `c2 - Paperwork risk` | Nếu Agent nhận diện paperwork risk kịp thời và đưa policy explanation hoặc handoff, buyer trust sẽ tăng và unsafe appointments sẽ giảm. | Escalation Recall, Safety Violations, appointment continuation rate |
+| `c3 - Anti-intermediary seller` | Nếu Agent rút lui đúng lúc và tạo privacy-safe bridge, seller drop-off sẽ giảm nhưng buyer PII vẫn được bảo vệ. | Drop-off after seller contact, PII Leakage Rate, Handoff correctness |
+| `Structured state` | Nếu dùng structured state có `source_message_ids` và `confidence`, next-action decision sẽ ổn định hơn raw-chat-only prompting. | State Extraction F1, Next-Action Accuracy, state correction rate |
+| `Router + bounded ReAct` | Nếu router chỉ wake bounded ReAct khi có trigger rõ, hệ thống vẫn linh hoạt nhưng giảm hallucination/tool misuse so với Pure ReAct. | Hallucination Rate, Tool Misuse Rate, latency per intervention |
+
 ### 9.2. Hệ thống Chỉ số đo lường (Metrics System) & Phân tích Lựa chọn
 
 Chúng tôi đề xuất bộ chỉ số đo lường toàn diện được chia làm 3 nhóm:
