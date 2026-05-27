@@ -21,7 +21,7 @@ Deliverable này chọn hướng **detailed concept + system design**, có mô t
 | Memory Strategy | Section 6 | Phân biệt raw logs, structured memory, rolling summary và compaction. |
 | Unstructured Data Handling | Section 7 | Normalize chat logs, extract intents/entities/risks, update state và log events. |
 | Internal Tools / APIs | Section 8.1 | Mock schemas cho search, listing detail, bridge, booking, log event. |
-| Agent Behavior | Section 8.2 | Router-first decision rules: hỏi thêm, search, bridge, booking, handoff. |
+| Agent Behavior | Section 8.2 | Router-first wake-up + bounded ReAct decision rules: hỏi thêm, search, bridge, booking, handoff. |
 | Evaluation + Feedback Loop | Section 9 | Success definition, top metrics, offline eval, online feedback loop. |
 | Error Analysis / Failure Modes | Section 5.3, 6.2, 7.4, 10 | Phân tích lỗi từ logs, worst-case và fallback. |
 
@@ -120,59 +120,69 @@ Chúng tôi lựa chọn **Option C: Hybrid Proxy & Co-pilot**.
 
 *   **Option A: Pure RAG / Q&A Architecture:** Hệ thống sử dụng Vector Database chứa chính sách sàn và thông tin xe. Khi người dùng hỏi, LLM sẽ truy vấn DB và trả lời trực tiếp.
 *   **Option B: Pure Agentic ReAct Loop:** Mỗi tin nhắn đến từ người dùng được đẩy vào một Agent chạy vòng lặp ReAct (Reasoning -> Action -> Observation). Agent tự suy luận để quyết định khi nào dùng tool và khi nào trả lời.
-*   **Option C: State-Driven Router (Lựa chọn đề xuất):** Tách biệt quy trình xử lý. Một Small LLM/NLP Model chạy ngầm chỉ để trích xuất thực thể và trạng thái cuộc hội thoại rồi cập nhật vào State DB. Một bộ định tuyến logic cứng (Rule-based Router) sẽ đọc State này để đưa ra quyết định hành động: Im lặng, gọi API nội bộ, hay gọi LLM Orchestrator sinh câu can thiệp.
+*   **Option C: State-Driven Router + Bounded ReAct Decision Engine (Lựa chọn đề xuất):** Tách biệt quy trình xử lý thành hai tầng. Một Small LLM/NLP model chạy ngầm để trích xuất thực thể và cập nhật State DB. Sau đó, Trigger Router đọc State để quyết định **khi nào** cần can thiệp. Nếu cần can thiệp, Co-pilot Orchestrator gọi một bounded ReAct Decision Engine để observe state, lập action plan, gọi tool hợp lệ hoặc tạo phản hồi.
 
 ### 3.2. Ma trận So sánh Kỹ thuật (Technical Comparison)
 
-| Tiêu chí | Option A: Pure RAG | Option B: Pure ReAct Agent | Option C: State-Driven Router |
+| Tiêu chí | Option A: Pure RAG | Option B: Pure ReAct Agent | Option C: State Router + Bounded ReAct |
 | :--- | :--- | :--- | :--- |
-| **Predictability & Guardrails** | **Rất cao.** Phản hồi hoàn toàn nằm trong phạm vi tài liệu RAG cung cấp. | **Rất thấp.** Agent dễ bị lặp vô hạn (infinite loop) hoặc tự ý gọi tool sai ngữ cảnh. | **Cực kỳ cao.** Logic điều hướng được kiểm soát bằng code cứng (rule-based) dựa trên State rõ ràng. |
-| **Latency (Độ trễ)** | Rất thấp (~1s). | Rất cao (3-8s vì phải chạy nhiều bước suy luận qua API LLM). | **Thấp.** Tin nhắn thường đi trực tiếp (0s delay). Tin nhắn can thiệp mất ~1.5 - 2s. |
-| **Token Cost (Chi phí)** | Thấp và ổn định. | Rất cao và tăng dần theo độ dài lịch sử chat (quadratic cost growth). | **Rất thấp.** Chỉ dùng mô hình nhỏ để parse tin nhắn. LLM lớn chỉ chạy khi có trigger can thiệp. |
-| **Capability (Khả năng)** | Kém. Chỉ Q&A, không thể chủ động gọi các logic nghiệp vụ phức tạp. | Rất tốt. Có khả năng tự xử lý linh hoạt mọi tình huống mới phát sinh. | **Xuất sắc.** Kết hợp được sự chính xác của logic nghiệp vụ (API) và sự linh hoạt của LLM. |
-| **Failure Modes (Kịch bản lỗi)** | Trả lời sai thông tin xe hoặc chính sách pháp lý nếu thông tin trong DB lỗi thời. | Lặp vô hạn, tiêu tốn token cực lớn, gọi sai công cụ ảnh hưởng tới database người dùng. | Trích xuất sai thực thể dẫn tới cập nhật State không chuẩn xác (cần cơ chế validation). |
+| **Predictability & Guardrails** | **Rất cao.** Phản hồi hoàn toàn nằm trong phạm vi tài liệu RAG cung cấp. | **Rất thấp.** Agent dễ bị lặp vô hạn (infinite loop) hoặc tự ý gọi tool sai ngữ cảnh. | **Cao.** Router kiểm soát khi nào Agent chạy; bounded ReAct chỉ được dùng approved actions/tools. |
+| **Latency (Độ trễ)** | Rất thấp (~1s). | Rất cao (3-8s vì phải chạy nhiều bước suy luận qua API LLM). | **Thấp đến trung bình.** Tin nhắn thường đi trực tiếp; khi có trigger, bounded ReAct chạy 1-3 bước có kiểm soát. |
+| **Token Cost (Chi phí)** | Thấp và ổn định. | Rất cao và tăng dần theo độ dài lịch sử chat (quadratic cost growth). | **Tối ưu hơn Pure ReAct.** Model nhỏ parse mọi tin nhắn; LLM lớn chỉ chạy khi Router wake agent. |
+| **Capability (Khả năng)** | Kém. Chỉ Q&A, không thể chủ động gọi các logic nghiệp vụ phức tạp. | Rất tốt. Có khả năng tự xử lý linh hoạt mọi tình huống mới phát sinh. | **Cao.** Vừa có state/rules để kiểm soát, vừa có ReAct loop ngắn để xử lý tình huống cần reasoning/tool chaining. |
+| **Failure Modes (Kịch bản lỗi)** | Trả lời sai thông tin xe hoặc chính sách pháp lý nếu thông tin trong DB lỗi thời. | Lặp vô hạn, tiêu tốn token cực lớn, gọi sai công cụ ảnh hưởng tới database người dùng. | Trigger sai, extract sai, hoặc bounded ReAct chọn action chưa phù hợp nếu guardrail/confidence yếu. |
 
 ### 3.3. Quyết định Kiến trúc & Lý giải (Architectural Decision)
 
-Chúng tôi chọn **Option C: State-Driven Router**.
+Chúng tôi chọn **Option C: State-Driven Router + Bounded ReAct Decision Engine**.
 
-*Lý do:* Đối với một sản phẩm thương mại thực tế, **sự ổn định (Predictability)** và **chi phí vận hành (Cost)** là hai yếu tố sống còn. Việc để một Agent tự do chạy ReAct Loop (Option B) giữa cuộc trò chuyện của khách hàng là quá mạo hiểm và tốn kém. Option C giúp chúng tôi cô lập LLM: LLM chỉ làm nhiệm vụ đọc hiểu (trích xuất state) và sinh ngôn ngữ (khi can thiệp). Toàn bộ logic nghiệp vụ (quyết định khi nào book lịch, khi nào hòa giải giá) được kiểm soát bởi các quy tắc lập trình xác thực (deterministic rules), loại bỏ hoàn toàn rủi ro Agent tự ý hành động sai lệch.
+*Lý do:* Đối với một sản phẩm thương mại thực tế, **sự ổn định (Predictability)** và **chi phí vận hành (Cost)** là hai yếu tố sống còn. Việc để một Agent tự do chạy ReAct Loop cho mọi tin nhắn là quá mạo hiểm và tốn kém. Tuy nhiên, khi đã có trigger rõ ràng, bounded ReAct lại phù hợp vì Decision Engine có thể **observe** structured state, recent messages và tool history; **think/plan** next best action; rồi **act** bằng approved tool hoặc phản hồi phù hợp. Router sở hữu quyết định **khi nào wake agent**, còn bounded ReAct sở hữu quyết định **giải quyết case đã được wake như thế nào**.
 
-*Fallback nếu State-Driven Router sai:* Mọi update nhạy cảm cần `confidence` đủ cao, qua validation rule, và luôn lưu `source_message_ids` để replay lại raw logs. Nếu state mâu thuẫn hoặc thiếu bằng chứng, router không gọi tool có tác động lớn mà chuyển sang `ASK_CLARIFYING_QUESTION` hoặc `ESCALATE_TO_SUPPORT`.
+*Fallback nếu kiến trúc này sai:* Mọi update nhạy cảm cần `confidence` đủ cao, qua validation rule, và luôn lưu `source_message_ids` để replay lại raw logs. Nếu state mâu thuẫn hoặc bounded ReAct không đủ tự tin, hệ thống không gọi tool có tác động lớn mà chuyển sang `ASK_CLARIFYING_QUESTION` hoặc `ESCALATE_TO_SUPPORT`.
 
 ---
 
 ## 4. System Architecture & Information Flow
 
-Hệ thống sử dụng mô hình **State-Driven Hybrid Proxy & Co-pilot Architecture**. Thay vì chạy ReAct Loop cho mỗi tin nhắn đến, hệ thống sử dụng một đường ống phân tích phân tầng (Layered Pipeline).
+Hệ thống sử dụng mô hình **State-Driven Hybrid Proxy & Co-pilot Architecture**. Thay vì chạy ReAct Loop không giới hạn cho mỗi tin nhắn đến, hệ thống dùng một pipeline phân tầng: extractor cập nhật state, router quyết định có cần wake Agent hay không, và khi cần can thiệp thì Co-pilot Orchestrator chạy một **bounded ReAct Decision Engine**.
 
 ```mermaid
 graph TD
     A[Buyer / Seller Messages] --> B[Message Gateway & Queue]
-    B --> C[Intent & Entity Extractor - Small LLM / NLP]
-    C --> D[State Manager - Write to DB]
-    D --> E[Guardrail & Risk Trigger Rules - Deterministic/Rules]
-    E -->|No Action Needed| F[Silent - Keep Monitoring]
-    E -->|Trigger Action / Conflict Detected| G[Co-pilot Orchestrator - LLM Agent]
-    E -->|High Risk / Hostile / Complex Legal| H[HITL Router - Human Support]
+    B --> C[Normalizer + Intent & Entity Extractor]
+    C --> D[State Manager - Structured State + Rolling Summary]
+    D --> E[Trigger Router - Rules + Confidence Checks]
 
-    G --> I{Decision Engine}
-    I -->|Call Tool| J[Internal APIs: Search, Book, Bridge...]
-    I -->|Generate Reply| K[Agent Response Generator]
+    E -->|No friction / normal chat| F[Silent Monitoring]
+    E -->|High legal/fraud/hostile risk| H[HITL Router - Human Support]
+    E -->|Friction detected / action needed| G[Co-pilot Orchestrator]
 
-    J --> L[Execution Logs]
+    G --> I[Bounded ReAct Decision Engine]
+    I --> I1[Observe: State + Recent Messages + Tool History]
+    I1 --> I2[Think / Plan: Next Best Action]
+    I2 --> I3{Action Type}
+
+    I3 -->|Call approved tool| J[Internal APIs: Search, Detail, Bridge, Book, Log]
+    J --> I4[Observe Tool Result]
+    I4 --> I2
+
+    I3 -->|Generate response| K[Agent Response Generator]
+    I3 -->|Unsafe / low confidence| H
+
     K --> M[Send Message to Chat Channel]
-    H --> N[Slack/Zalo/Internal Dashboard Notification for Specialist]
+    J --> L[Execution Logs]
+    H --> N[Support Dashboard / Ticket]
 ```
 
 ### Quy trình luồng thông tin (Information Flow)
 
 1.  **Ingestion:** Buyer và Seller gửi tin nhắn vào kênh chat chung.
 2.  **Silent Extraction:** Một model LLM nhỏ, chi phí thấp (ví dụ: `GPT-4o-mini` hoặc `Llama-3-8B-Instruct` được lượng tử hóa) phân tích tin nhắn để trích xuất thực thể (NER) như: hãng xe, khoảng giá, địa điểm, odo, các rủi ro giấy tờ và cập nhật vào **State Database**.
-3.  **Rule-based Classifier (Router):** Một bộ lọc deterministic dựa trên State vừa cập nhật để quyết định:
+3.  **Trigger Router:** Một bộ lọc deterministic + confidence checks dựa trên State vừa cập nhật để quyết định:
     *   _Trường hợp 1 (Silent):_ Cuộc đối thoại đang diễn ra bình thường giữa hai bên. Agent im lặng để tránh làm loãng chat và tiết kiệm chi phí.
-    *   _Trường hợp 2 (Active Intervention):_ Xuất hiện các sự kiện cần xử lý (ví dụ: người mua hỏi xe tương tự, hai bên đồng ý xem xe nhưng chưa chốt giờ, phát hiện rủi ro giấy tờ). Agent được gọi dậy để xử lý.
+    *   _Trường hợp 2 (Active Intervention):_ Xuất hiện các sự kiện cần xử lý (ví dụ: người mua hỏi xe tương tự, hai bên đồng ý xem xe nhưng chưa chốt giờ, phát hiện rủi ro giấy tờ). Router wake bounded ReAct Decision Engine để observe context, lập plan, gọi tool hoặc sinh phản hồi.
     *   _Trường hợp 3 (Escalation):_ Người dùng bày tỏ sự bực tức, từ chối Agent (`c3`), hoặc rủi ro pháp lý quá phức tạp. Chuyển ngay lập tức sang người thật (Human-in-the-loop).
+4.  **Bounded ReAct Decision Engine:** Khi được wake, Decision Engine chạy chu trình ngắn `Observe -> Think/Plan -> Act -> Observe result -> Reply/Log`, tối đa vài bước và chỉ với approved tools.
 
 ---
 
@@ -493,11 +503,11 @@ Ví dụ event logs tối thiểu:
 
 ## 8. Agent Behavior & Decision Logic
 
-Agent hoạt động theo hướng **router-first, constrained LLM orchestration after trigger**. Nghĩa là hệ thống không để LLM tự do quyết định mọi thứ theo ReAct loop; router đọc State trước để xác định action hợp lệ, sau đó LLM chỉ được sinh câu trả lời hoặc đề xuất tool call trong phạm vi guardrails.
+Agent hoạt động theo hướng **router-first, bounded ReAct after trigger**. Nghĩa là hệ thống không để LLM tự do quyết định mọi thứ cho mọi tin nhắn; router đọc State trước để xác định có cần wake Agent hay không. Khi được wake, bounded ReAct Decision Engine có thể observe context, lập action plan, gọi approved tools, quan sát kết quả tool, rồi phản hồi hoặc handoff trong phạm vi guardrails.
 
 ### 8.1. Chi tiết các công cụ (Tool Specifications)
 
-Chúng tôi định nghĩa các tools dưới dạng JSON Schema để LLM Agent có thể gọi chính xác. Tool calls không hardcode hoàn toàn: **state/rules quyết định eligibility**, còn LLM đề xuất tham số và nội dung phản hồi trong phạm vi đã được validate.
+Chúng tôi định nghĩa các tools dưới dạng JSON Schema để bounded ReAct Agent có thể gọi chính xác. Tool calls không hardcode hoàn toàn: **router/state/rules quyết định eligibility**, còn bounded ReAct quyết định **action plan và tham số cụ thể** trong phạm vi allowed tools, schema validation và confidence thresholds.
 
 #### 1. `search_listings`
 ```json
@@ -653,6 +663,8 @@ Agent tuân thủ các điều kiện chuyển đổi trạng thái và quyết 
 
 -   **Quy tắc can thiệp:** Agent chỉ phát ngôn khi `next_best_action.action_type` yêu cầu phản hồi trực tiếp, tránh spam người dùng.
 -   **Quy tắc rút lui (Handoff):** Khi xảy ra các tình huống vượt quá khả năng xử lý của AI (ví dụ: phát hiện rủi ro lừa đảo cao, giấy tờ pháp lý không rõ ràng gây tranh chấp mạnh, hoặc người bán từ chối Agent một cách gay gắt), Agent lập tức thiết lập trạng thái State thành `lead_stage = ESCALATED` và chuyển giao cho nhân viên hỗ trợ thông qua hệ thống ticket.
+-   **Bounded ReAct guardrails:** Mỗi lần wake Agent chỉ được chạy tối đa 2-3 action/tool steps; tool call phải match approved JSON schema; không được `book_appointment` nếu legal/fraud risk chưa resolved; state conflict hoặc confidence thấp thì hỏi lại hoặc handoff; mọi action đều log `state_before`, `action`, `tool_result`, `state_after`.
+-   **Phân quyền rõ ràng:** Router quyết định **khi nào** wake Agent; bounded ReAct Decision Engine quyết định **cách xử lý** case đã được wake bằng observe, plan, tool call, response hoặc handoff.
 
 #### Decision rules cụ thể
 
